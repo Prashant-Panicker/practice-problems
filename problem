@@ -1,0 +1,144 @@
+#!/bin/sh
+
+set -eu
+
+root_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+problems_directory="$root_directory/problems"
+
+show_usage() {
+    cat <<'EOF'
+Usage:
+  ./problem new <folder-name>   Create a problem folder
+    ./problem init <folder-name>  Initialize an existing empty folder
+    ./problem run <name-or-number> Run a problem from the repository root
+EOF
+}
+
+require_folder_name() {
+    if [ "$#" -ne 1 ]; then
+        show_usage >&2
+        exit 2
+    fi
+
+    case "$1" in
+        ""|.*|*/*|*\\*)
+            echo "Folder name must be a simple, visible name." >&2
+            exit 2
+            ;;
+    esac
+}
+
+find_problem_directory() {
+    problem_name=$1
+
+    if [ -d "$problems_directory/$problem_name" ]; then
+        printf '%s\n' "$problems_directory/$problem_name"
+        return 0
+    fi
+
+    case "$problem_name" in
+        [0-9]) problem_number="0$problem_name" ;;
+        [0-9][0-9]) problem_number=$problem_name ;;
+        *) problem_number="" ;;
+    esac
+
+    if [ -n "$problem_number" ]; then
+        for candidate in "$problems_directory/$problem_number"-*; do
+            [ -d "$candidate" ] || continue
+            printf '%s\n' "$candidate"
+            return 0
+        done
+        return 1
+    fi
+
+    found_directory=""
+    for candidate in "$problems_directory"/[0-9][0-9]-"$problem_name"; do
+        [ -d "$candidate" ] || continue
+        if [ -n "$found_directory" ]; then
+            echo "Multiple problem folders match: $problem_name" >&2
+            return 1
+        fi
+        found_directory=$candidate
+    done
+
+    [ -n "$found_directory" ] || return 1
+    printf '%s\n' "$found_directory"
+}
+
+next_problem_number() {
+    highest=0
+    for candidate in "$problems_directory"/[0-9][0-9]-*; do
+        [ -d "$candidate" ] || continue
+        prefix=${candidate##*/}
+        prefix=${prefix%%-*}
+        prefix_value=${prefix#0}
+        [ -n "$prefix_value" ] || prefix_value=0
+        if [ "$prefix_value" -gt "$highest" ]; then
+            highest=$prefix_value
+        fi
+    done
+
+    printf '%02d\n' "$((highest + 1))"
+}
+
+command_name=${1:-}
+case "$command_name" in
+    new|init)
+        shift
+        require_folder_name "$@"
+        mkdir -p "$problems_directory"
+
+        if existing_directory=$(find_problem_directory "$1"); then
+            if [ "$command_name" = "new" ]; then
+                echo "Folder already exists: $existing_directory" >&2
+                exit 1
+            fi
+            target_directory=$existing_directory
+        else
+            target_directory="$problems_directory/$(next_problem_number)-$1"
+        fi
+
+        if [ "$command_name" = "new" ] && [ -e "$target_directory" ]; then
+            echo "Folder already exists: $target_directory" >&2
+            exit 1
+        fi
+
+        if [ "$command_name" = "init" ]; then
+            mkdir -p "$target_directory"
+        else
+            mkdir "$target_directory"
+        fi
+
+        for file_name in Problem.csproj Solution.cs input.txt output.txt; do
+            if [ -e "$target_directory/$file_name" ]; then
+                echo "Refusing to overwrite: $target_directory/$file_name" >&2
+                exit 1
+            fi
+        done
+
+        cp "$root_directory/templates/Problem.csproj" "$target_directory/Problem.csproj"
+        cp "$root_directory/templates/Solution.cs" "$target_directory/Solution.cs"
+        cp "$root_directory/templates/input.txt" "$target_directory/input.txt"
+        cp "$root_directory/templates/output.txt" "$target_directory/output.txt"
+        echo "Created $1"
+        ;;
+    run)
+        shift
+        require_folder_name "$@"
+        if ! target_directory=$(find_problem_directory "$1"); then
+            echo "Problem folder not found: $1" >&2
+            exit 1
+        fi
+
+        if [ ! -f "$target_directory/Problem.csproj" ]; then
+            echo "Problem project not found: $target_directory/Problem.csproj" >&2
+            exit 1
+        fi
+
+        PROBLEM_DIR="$target_directory" dotnet run --project "$target_directory/Problem.csproj"
+        ;;
+    *)
+        show_usage >&2
+        exit 2
+        ;;
+esac
